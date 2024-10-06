@@ -17,47 +17,30 @@ buildscript {
 }
 
 plugins {
+    id 'java'
     id 'maven-publish'
 }
 
-static List<String> getPublishedVersions() {
-    String xml
-
-    try {
-        xml = new URL("https://maven.glass-launcher.net/babric/babric/intermediary/maven-metadata.xml").text
-    } catch (FileNotFoundException ignored) {
-        return []
-    }
-
-    def metadata = new XmlSlurper().parseText(xml)
-    def versions = metadata.versioning.versions.version*.text();
-    return versions
-}
-
-def publishedVersions = getPublishedVersions()
-
 def ENV = System.getenv()
 
-def published = false
 def localMappingsPath = "$buildDir/v2Mappings"
 def localv1UpstreamedMappingsPath = "$buildDir/v1UpstreamMappings"
 def localv2UpstreamedMappingsPath = "$buildDir/v2UpstreamMappings"
+
 new File(localMappingsPath).mkdirs()
 new File(localv1UpstreamedMappingsPath).mkdirs()
 new File(localv2UpstreamedMappingsPath).mkdirs()
+
 file('mappings').eachFile {
     if (!it.name.endsWith(".tiny")) return
 
-    def mcVer = it.name.replace(".tiny", "")
+    def mcVersion = it.name.replace(".tiny", "")
 
-    if (publishedVersions.contains(mcVer) && !(ENV.FORCE_PUBLISH == mcVer)) {
-        project.logger.lifecycle("Skipping ${mcVer} as it has already been released")
-        return
-    } else {
-        project.logger.lifecycle("Building ${mcVer}")
-    }
+    def artifactVersion = mcVersion
+    if (ENV.GITHUB_REF_NAME)
+        artifactVersion += "+" + ENV.GITHUB_REF_NAME
 
-    published = true
+    project.logger.lifecycle("Building ${artifactVersion}")
 
     File v1MappingFile = it
     File v2MappingFile = new File("$localMappingsPath/${it.name}")
@@ -72,7 +55,7 @@ file('mappings').eachFile {
 
         doLast {
             def memoryMappingTree = new MemoryMappingTree()
-            MappingNsCompleter nsCompleter = new MappingNsCompleter(memoryMappingTree, Map.of("glue", "intermediary", "server", "intermediary", "client", "intermediary"));
+            def nsCompleter = new MappingNsCompleter(memoryMappingTree, Map.of("glue", "intermediary", "server", "intermediary", "client", "intermediary"));
             MappingReader.read(v1MappingFile.toPath(), nsCompleter)
             try (MappingWriter mappingWriter = MappingWriter.create(v2MappingFile.toPath(), MappingFormat.TINY_2_FILE)) {
                 memoryMappingTree.accept(mappingWriter)
@@ -88,10 +71,10 @@ file('mappings').eachFile {
 
         doLast {
             def memoryMappingTree = new MemoryMappingTree()
-            MappingDstNsReorder reorder = new MappingDstNsReorder(memoryMappingTree, "clientOfficial", "serverOfficial")
-            MappingNsRenamer renamer = new MappingNsRenamer(reorder, ["client": "clientOfficial", "server": "serverOfficial"])
+            def reorder = new MappingDstNsReorder(memoryMappingTree, "clientOfficial", "serverOfficial")
+            def renamer = new MappingNsRenamer(reorder, ["client": "clientOfficial", "server": "serverOfficial"])
             MappingReader.read(v1MappingFile.toPath(), renamer)
-            try (MappingWriter mappingWriter = MappingWriter.create(v1UpstreamedMappingFile.toPath(), MappingFormat.TINY_FILE)) {
+            try (def mappingWriter = MappingWriter.create(v1UpstreamedMappingFile.toPath(), MappingFormat.TINY_FILE)) {
                 memoryMappingTree.accept(mappingWriter)
             }
         }
@@ -106,30 +89,31 @@ file('mappings').eachFile {
 
         doLast {
             def memoryMappingTree = new MemoryMappingTree()
-            MappingDstNsReorder reorder = new MappingDstNsReorder(memoryMappingTree, "clientOfficial", "serverOfficial")
-            MappingNsRenamer renamer = new MappingNsRenamer(reorder, ["client": "clientOfficial", "server": "serverOfficial"])
+            def reorder = new MappingDstNsReorder(memoryMappingTree, "clientOfficial", "serverOfficial")
+            def renamer = new MappingNsRenamer(reorder, ["client": "clientOfficial", "server": "serverOfficial"])
             MappingReader.read(v2MappingFile.toPath(), renamer)
-            try (MappingWriter mappingWriter = MappingWriter.create(v2UpstreamedMappingFile.toPath(), MappingFormat.TINY_2_FILE)) {
+            try (def mappingWriter = MappingWriter.create(v2UpstreamedMappingFile.toPath(), MappingFormat.TINY_2_FILE)) {
                 memoryMappingTree.accept(mappingWriter)
             }
         }
     }
 
-    Jar makeV1Jar = makeJar(mcVer, v1MappingFile, false, false)
-    Jar makeV2Jar = makeJar(mcVer, v2MappingFile, true, false)
-    Jar makeUpstreamedV1Jar = makeJar(mcVer, v1UpstreamedMappingFile, false, true)
-    Jar makeUpstreamedV2Jar = makeJar(mcVer, v2UpstreamedMappingFile, true, true)
+    Jar makeV1Jar = makeJar(mcVersion, v1MappingFile, false, false)
+    Jar makeV2Jar = makeJar(mcVersion, v2MappingFile, true, false)
+    Jar makeUpstreamV1Jar = makeJar(mcVersion, v1UpstreamedMappingFile, false, true)
+    Jar makeUpstreamV2Jar = makeJar(mcVersion, v2UpstreamedMappingFile, true, true)
 
     makeV2Jar.dependsOn conversionTask
-    makeUpstreamedV1Jar.dependsOn V1UpstreamedTask
-    makeUpstreamedV2Jar.dependsOn V2UpstreamedTask
+    makeUpstreamV1Jar.dependsOn V1UpstreamedTask
+    makeUpstreamV2Jar.dependsOn V2UpstreamedTask
 
     publishing {
         publications {
-            create("${mcVer.replace(" ", "")}_mavenJava", MavenPublication) {
+            def publishName = "${mcVersion.replace(" ", "_")}"
+            create(publishName, MavenPublication) {
                 groupId "babric"
                 artifactId "intermediary"
-                version mcVer
+                version artifactVersion
                 artifact(makeV1Jar.archiveFile) {
                     builtBy makeV1Jar
                 }
@@ -138,15 +122,15 @@ file('mappings').eachFile {
                     classifier = "v2"
                 }
             }
-            create("${mcVer.replace(" ", "")}Upstream_mavenJava", MavenPublication) {
+            create(publishName + "-upstream", MavenPublication) {
                 groupId "babric"
                 artifactId "intermediary-upstream"
-                version mcVer
-                artifact(makeUpstreamedV1Jar.archiveFile) {
-                    builtBy makeUpstreamedV1Jar
+                version artifactVersion
+                artifact(makeUpstreamV1Jar.archiveFile) {
+                    builtBy makeUpstreamV1Jar
                 }
-                artifact(makeUpstreamedV2Jar.archiveFile) {
-                    builtBy makeUpstreamedV2Jar
+                artifact(makeUpstreamV2Jar.archiveFile) {
+                    builtBy makeUpstreamV2Jar
                     classifier = "v2"
                 }
             }
@@ -154,14 +138,10 @@ file('mappings').eachFile {
     }
 }
 
-if (!published) {
-    throw new RuntimeException("Nothing to publish, override with the FORCE_PUBLISH env")
-}
-
-def makeJar(String mcVersion, File mappings, boolean v2, boolean upstreamed) {
-    def jarFilename = "intermediary-" + (upstreamed ? "upstream-" : "") + mcVersion + (v2 ? "-v2" : "")
-    return task("${mcVersion}_makeJar" + (v2 ? "v2" : "") + (upstreamed ? "Upstream" : ""), type: Jar) {
-        baseName jarFilename
+def makeJar(String version, File mappings, boolean v2, boolean upstreamed) {
+    def jarFilename = "intermediary-" + (upstreamed ? "upstream-" : "") + version + (v2 ? "-v2" : "")
+    return tasks.create("${version}_makeJar" + (v2 ? "v2" : "") + (upstreamed ? "Upstream" : ""), Jar) {
+        archiveBaseName = jarFilename
         from(file(mappings)) {
             into "mappings"
             rename mappings.name, "mappings.tiny"
@@ -187,8 +167,8 @@ publishing {
                 name = "GitHubPackages"
                 url = "https://maven.pkg.github.com/Adventurecraft-Awakening/babric-intermediary"
                 credentials {
-                    username = System.getenv("GITHUB_ACTOR")
-                    password = System.getenv("GITHUB_TOKEN")
+                    username = ENV.GITHUB_ACTOR
+                    password = ENV.GITHUB_TOKEN
                 }
             }
         }
