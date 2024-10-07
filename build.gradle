@@ -96,18 +96,14 @@ file("mappings").eachDir { dir ->
         publications {
             def publishName = "${mcVersion.replace(" ", "_")}"
             create(publishName, MavenPublication) {
-                groupId "babric"
-                artifactId "intermediary"
-                version artifactVersion
+                artifactId artifactVersion
                 artifact(makeV1Jar)
                 artifact(makeV2Jar) {
                     classifier = "v2"
                 }
             }
             create(publishName + "-upstream", MavenPublication) {
-                groupId "babric"
-                artifactId "intermediary-upstream"
-                version artifactVersion
+                artifactId artifactVersion + "-upstream"
                 artifact(makeUpstreamV1Jar)
                 artifact(makeUpstreamV2Jar) {
                     classifier = "v2"
