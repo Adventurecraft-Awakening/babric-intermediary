@@ -17,24 +17,16 @@ buildscript {
 }
 
 plugins {
-    id 'java'
     id 'maven-publish'
 }
 
 def ENV = System.getenv()
 
-def localMappingsPath = "$buildDir/v2Mappings"
-def localv1UpstreamedMappingsPath = "$buildDir/v1UpstreamMappings"
-def localv2UpstreamedMappingsPath = "$buildDir/v2UpstreamMappings"
+file("mappings").eachDir { dir ->
 
-new File(localMappingsPath).mkdirs()
-new File(localv1UpstreamedMappingsPath).mkdirs()
-new File(localv2UpstreamedMappingsPath).mkdirs()
-
-file('mappings').eachFile {
-    if (!it.name.endsWith(".tiny")) return
-
-    def mcVersion = it.name.replace(".tiny", "")
+    def mcVersion = dir.name
+    def buildDir = new File(layout.buildDirectory.asFile.get(), "mappings/" + dir.name)
+    buildDir.mkdirs()
 
     def artifactVersion = mcVersion
     if (ENV.GITHUB_REF_NAME)
@@ -42,13 +34,12 @@ file('mappings').eachFile {
 
     project.logger.lifecycle("Building ${artifactVersion}")
 
-    File v1MappingFile = it
-    File v2MappingFile = new File("$localMappingsPath/${it.name}")
-    File v1UpstreamedMappingFile = new File("$localv1UpstreamedMappingsPath/${it.name}")
-    File v2UpstreamedMappingFile = new File("$localv2UpstreamedMappingsPath/${it.name}")
+    def v1MappingFile = new File(dir, "mappings.tiny")
+    def v2MappingFile = new File(buildDir, "v1.tiny")
+    def v1UpstreamedMappingFile = new File(buildDir, "v1-upstream.tiny")
+    def v2UpstreamedMappingFile = new File(buildDir, "v2-upstream.tiny")
 
-    def conversionTask = "convert${it.name}ToV2"
-    tasks.register(conversionTask) {
+    def conversionTask = tasks.register("${mcVersion}_convertToV2") {
         group = "V2 Conversion"
         inputs.file(v1MappingFile)
         outputs.file(v2MappingFile)
@@ -57,14 +48,13 @@ file('mappings').eachFile {
             def memoryMappingTree = new MemoryMappingTree()
             def nsCompleter = new MappingNsCompleter(memoryMappingTree, Map.of("glue", "intermediary", "server", "intermediary", "client", "intermediary"));
             MappingReader.read(v1MappingFile.toPath(), nsCompleter)
-            try (MappingWriter mappingWriter = MappingWriter.create(v2MappingFile.toPath(), MappingFormat.TINY_2_FILE)) {
+            try (def mappingWriter = MappingWriter.create(v2MappingFile.toPath(), MappingFormat.TINY_2_FILE)) {
                 memoryMappingTree.accept(mappingWriter)
             }
         }
     }
 
-    def V1UpstreamedTask = "toV1Upstream"
-    tasks.register(V1UpstreamedTask) {
+    def V1UpstreamedTask = tasks.register("${mcVersion}_toV1Upstream") {
         group = "V1 Upstream Conversion"
         inputs.file(v1MappingFile)
         outputs.file(v1UpstreamedMappingFile)
@@ -80,8 +70,7 @@ file('mappings').eachFile {
         }
     }
 
-    def V2UpstreamedTask = "toV2Upstream"
-    tasks.register(V2UpstreamedTask) {
+    def V2UpstreamedTask = tasks.register("${mcVersion}_toV2Upstream") {
         group = "V2 Upstream Conversion"
         inputs.file(v2MappingFile)
         outputs.file(v2UpstreamedMappingFile)
@@ -98,14 +87,10 @@ file('mappings').eachFile {
         }
     }
 
-    Jar makeV1Jar = makeJar(mcVersion, v1MappingFile, false, false)
-    Jar makeV2Jar = makeJar(mcVersion, v2MappingFile, true, false)
-    Jar makeUpstreamV1Jar = makeJar(mcVersion, v1UpstreamedMappingFile, false, true)
-    Jar makeUpstreamV2Jar = makeJar(mcVersion, v2UpstreamedMappingFile, true, true)
-
-    makeV2Jar.dependsOn conversionTask
-    makeUpstreamV1Jar.dependsOn V1UpstreamedTask
-    makeUpstreamV2Jar.dependsOn V2UpstreamedTask
+    def makeV1Jar = makeJar(mcVersion, v1MappingFile, false, false, {})
+    def makeV2Jar = makeJar(mcVersion, v2MappingFile, true, false, {it.dependsOn(conversionTask) })
+    def makeUpstreamV1Jar = makeJar(mcVersion, v1UpstreamedMappingFile, false, true, {it.dependsOn(V1UpstreamedTask) })
+    def makeUpstreamV2Jar = makeJar(mcVersion, v2UpstreamedMappingFile, true, true, {it.dependsOn(V2UpstreamedTask) })
 
     publishing {
         publications {
@@ -114,11 +99,8 @@ file('mappings').eachFile {
                 groupId "babric"
                 artifactId "intermediary"
                 version artifactVersion
-                artifact(makeV1Jar.archiveFile) {
-                    builtBy makeV1Jar
-                }
-                artifact(makeV2Jar.archiveFile) {
-                    builtBy makeV2Jar
+                artifact(makeV1Jar)
+                artifact(makeV2Jar) {
                     classifier = "v2"
                 }
             }
@@ -126,11 +108,8 @@ file('mappings').eachFile {
                 groupId "babric"
                 artifactId "intermediary-upstream"
                 version artifactVersion
-                artifact(makeUpstreamV1Jar.archiveFile) {
-                    builtBy makeUpstreamV1Jar
-                }
-                artifact(makeUpstreamV2Jar.archiveFile) {
-                    builtBy makeUpstreamV2Jar
+                artifact(makeUpstreamV1Jar)
+                artifact(makeUpstreamV2Jar) {
                     classifier = "v2"
                 }
             }
@@ -138,15 +117,16 @@ file('mappings').eachFile {
     }
 }
 
-def makeJar(String version, File mappings, boolean v2, boolean upstreamed) {
+def makeJar(String version, File mappings, boolean v2, boolean upstreamed, Action<Jar> configure) {
     def jarFilename = "intermediary-" + (upstreamed ? "upstream-" : "") + version + (v2 ? "-v2" : "")
-    return tasks.create("${version}_makeJar" + (v2 ? "v2" : "") + (upstreamed ? "Upstream" : ""), Jar) {
+    return tasks.register("${version}_makeJar" + (v2 ? "v2" : "") + (upstreamed ? "Upstream" : ""), Jar) {
         archiveBaseName = jarFilename
         from(file(mappings)) {
             into "mappings"
             rename mappings.name, "mappings.tiny"
         }
         destinationDirectory = file("build/jars")
+        configure(it)
     }
 }
 
