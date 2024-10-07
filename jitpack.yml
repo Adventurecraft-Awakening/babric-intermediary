@@ -1,5 +1,4 @@
 jdk:
   - openjdk21
 install:
-  - echo "Running a custom install command"
-  - ./gradlew -Pgroup=$GROUP -Pversion=$VERSION publishToMavenLocal -xtest
+  - ./gradlew -Pgroup=$GROUP -Pversion=$VERSION publishToMavenLocal
